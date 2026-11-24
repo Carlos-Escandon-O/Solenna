@@ -29,6 +29,17 @@
   .msg.error{color:var(--red)}
   .msg.ok{color:var(--green)}
   .hint{font-size:11px;color:#9a8f7e;line-height:1.6;margin-top:14px}
+  .progreso{font-size:12px;color:var(--muted);margin-top:14px}
+  .barra{height:6px;background:#eee4d2;border-radius:999px;overflow:hidden;margin-top:6px}
+  .barra i{display:block;height:100%;width:0;background:linear-gradient(90deg,#c99a37,#a8761f);transition:width .2s}
+  .preview-wrap{margin-top:14px;border:1px solid var(--line);border-radius:12px;padding:10px;background:#fff}
+  .preview{
+    height:230px;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;
+    background-color:#fff;
+    background-image:linear-gradient(45deg,#e6e0d4 25%,transparent 25%),linear-gradient(-45deg,#e6e0d4 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e6e0d4 75%),linear-gradient(-45deg,transparent 75%,#e6e0d4 75%);
+    background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0;
+  }
+  .preview img{max-width:100%;max-height:100%;object-fit:contain}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th{text-align:left;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:8px 6px;border-bottom:1px solid var(--line)}
   td{padding:6px;border-bottom:1px solid #f0eade;vertical-align:top}
@@ -116,6 +127,39 @@
       Stock en 0 = aparece como "Agotado" y el botón de WhatsApp se desactiva.
     </p>
   </section>
+
+  <section class="card hidden" id="fondoCard">
+    <h2 style="font-size:16px;margin:0 0 6px">Quitar fondo con IA</h2>
+    <p class="resumen" style="margin:0 0 14px">El mismo efecto de Canva, sin salir del panel. La foto se procesa en tu navegador y el modelo se descarga desde la nube (no se instala nada).</p>
+
+    <label for="fondoFile">Foto de la joya (JPG, PNG o WebP)</label>
+    <input type="file" id="fondoFile" accept="image/png,image/jpeg,image/webp">
+
+    <div class="btn-row">
+      <button class="btn" id="quitarBtn">Quitar fondo</button>
+      <button class="btn secondary" id="descargarBtn" disabled>Descargar PNG</button>
+    </div>
+
+    <div class="progreso hidden" id="progresoDiv">
+      <span id="progresoTxt">Preparando…</span>
+      <div class="barra"><i id="progresoBar"></i></div>
+    </div>
+    <p class="msg" id="fondoMsg"></p>
+
+    <div class="preview-wrap hidden" id="previewWrap">
+      <div class="preview" id="preview"></div>
+    </div>
+
+    <div id="reemplazoDiv" class="hidden" style="margin-top:14px;border-top:1px dashed var(--line);padding-top:14px">
+      <label for="piezaSelect">Reemplazar la imagen de esta pieza del catálogo</label>
+      <select id="piezaSelect"></select>
+      <div class="btn-row">
+        <button class="btn" id="reemplazarBtn">Subir y reemplazar</button>
+      </div>
+    </div>
+
+    <p class="hint">La primera vez descarga el modelo (~40 MB) y puede tardar un poco; después queda en caché. Para publicar el resultado elige una pieza existente: no hace falta editar <code>catalogo.json</code>.</p>
+  </section>
 </main>
 
 <script>
@@ -127,6 +171,7 @@ const BRANCH = 'main';
 const $ = id => document.getElementById(id);
 let sha = '';
 let datos = [];
+let resultadoBlob = null;
 
 function b64decode(s){
   const bin = atob(s.replace(/\s/g,''));
@@ -191,6 +236,13 @@ function pintar(){
   const total = datos.length;
   const agotados = datos.filter(p => Number(p.stock)<=0).length;
   $('resumen').textContent = `${total} piezas · ${agotados} agotadas`;
+  pintarSelect();
+}
+
+function pintarSelect(){
+  $('piezaSelect').innerHTML = datos.filter(p => p.src).map(p =>
+    `<option value="${String(p.src).replace(/"/g,'&quot;')}">${String(p.nombre||p.id).replace(/"/g,'&quot;')} — ${String(p.src).replace(/"/g,'&quot;')}</option>`
+  ).join('');
 }
 
 function leerTabla(){
@@ -205,6 +257,7 @@ function leerTabla(){
     });
   });
   $('resumen').textContent = `${datos.length} piezas · ${datos.filter(p=>Number(p.stock)<=0).length} agotadas`;
+  pintarSelect();
 }
 
 function validar(){
@@ -229,6 +282,7 @@ $('entrarBtn').onclick = async () => {
     await cargar();
     $('loginCard').classList.add('hidden');
     $('panelCard').classList.remove('hidden');
+    $('fondoCard').classList.remove('hidden');
     msg($('panelMsg'),'','');
   }catch(e){
     localStorage.removeItem(TOKEN_KEY);
@@ -245,6 +299,7 @@ $('salirBtn').onclick = () => {
   localStorage.removeItem(TOKEN_KEY);
   $('token').value = '';
   $('panelCard').classList.add('hidden');
+  $('fondoCard').classList.add('hidden');
   $('loginCard').classList.remove('hidden');
   msg($('loginMsg'),'','');
 };
@@ -279,6 +334,109 @@ $('guardarBtn').onclick = async () => {
     msg($('panelMsg'),'✅ Guardado. La web se actualiza en ~1 minuto.','ok');
   }catch(e){
     msg($('panelMsg'),'No se pudo guardar: ' + e.message,'error');
+  }
+};
+
+/* ---- Quitar fondo con IA, en el navegador (modelo desde CDN) ---- */
+let _remover = null;
+let previewUrl = null;
+async function getRemover(){
+  if (!_remover){
+    const mod = await import('https://esm.sh/@imgly/background-removal@1.7.0');
+    _remover = mod.default || mod.removeBackground;
+  }
+  return _remover;
+}
+function mostrarProgreso(texto, pct){
+  $('progresoDiv').classList.remove('hidden');
+  $('progresoTxt').textContent = texto;
+  $('progresoBar').style.width = Math.max(0, Math.min(100, pct||0)) + '%';
+}
+async function base64DeBlob(blob){
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let bin = '';
+  for (let i=0; i<buf.length; i+=0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i+0x8000));
+  return btoa(bin);
+}
+
+$('quitarBtn').onclick = async () => {
+  const f = $('fondoFile').files && $('fondoFile').files[0];
+  if (!f){ msg($('fondoMsg'),'Elige una foto primero.','error'); return; }
+  resultadoBlob = null;
+  $('descargarBtn').disabled = true;
+  $('reemplazoDiv').classList.add('hidden');
+  $('previewWrap').classList.add('hidden');
+  $('quitarBtn').disabled = true;
+  msg($('fondoMsg'),'');
+  try{
+    mostrarProgreso('Cargando IA… (la primera vez descarga ~40 MB)', 0);
+    const fn = await getRemover();
+    const blob = await fn(f, {
+      model: 'isnet_quint8',
+      progress: (key, cur, tot) => {
+        const pct = tot ? Math.round(cur/tot*100) : 0;
+        mostrarProgreso(key.indexOf('fetch') === 0 ? 'Descargando modelo… ' + pct + '%' : 'Recortando la joya…', pct);
+      }
+    });
+    mostrarProgreso('Listo', 100);
+    resultadoBlob = blob;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = URL.createObjectURL(blob);
+    $('preview').innerHTML = `<img src="${previewUrl}" alt="Joya sin fondo">`;
+    $('previewWrap').classList.remove('hidden');
+    $('descargarBtn').disabled = false;
+    $('reemplazoDiv').classList.remove('hidden');
+    msg($('fondoMsg'),'✅ Fondo eliminado. Ya puedes descargarlo o reemplazar una pieza.','ok');
+  }catch(e){
+    msg($('fondoMsg'),'No se pudo procesar: ' + (e.message||e) + '. Revisa tu conexión.','error');
+    $('progresoDiv').classList.add('hidden');
+  }finally{
+    $('quitarBtn').disabled = false;
+  }
+};
+
+$('descargarBtn').onclick = () => {
+  if (!resultadoBlob) return;
+  const url = URL.createObjectURL(resultadoBlob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'joya-sin-fondo.png';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+};
+
+$('reemplazarBtn').onclick = async () => {
+  if (!resultadoBlob){ msg($('fondoMsg'),'Primero quita el fondo.','error'); return; }
+  const path = $('piezaSelect').value;
+  if (!path){ msg($('fondoMsg'),'Elige una pieza del catálogo.','error'); return; }
+  if (!confirm('¿Reemplazar la imagen "' + path + '" con esta versión sin fondo?')) return;
+  $('reemplazarBtn').disabled = true;
+  msg($('fondoMsg'),'Subiendo a GitHub…');
+  try{
+    const getR = await fetch(`https://api.github.com/repos/${repo()}/contents/${path}?ref=${BRANCH}`, { headers: headers() });
+    let fileSha = null;
+    if (getR.ok) fileSha = (await getR.json()).sha;
+    else if (getR.status !== 404){
+      const j = await getR.json().catch(()=>({}));
+      throw new Error(j.message || ('HTTP ' + getR.status));
+    }
+    const body = {
+      message: 'Actualizar imagen de pieza desde el panel de Solenna',
+      content: await base64DeBlob(resultadoBlob),
+      branch: BRANCH
+    };
+    if (fileSha) body.sha = fileSha;
+    const putR = await fetch(`https://api.github.com/repos/${repo()}/contents/${path}`, {
+      method:'PUT', headers: headers(), body: JSON.stringify(body)
+    });
+    if (!putR.ok){
+      const j = await putR.json().catch(()=>({}));
+      throw new Error(j.message || ('HTTP ' + putR.status));
+    }
+    msg($('fondoMsg'),'✅ Imagen publicada. La web se actualiza en ~1 minuto.','ok');
+  }catch(e){
+    msg($('fondoMsg'),'No se pudo subir: ' + (e.message||e) + '. Revisa el token y su permiso Contents: read and write.','error');
+  }finally{
+    $('reemplazarBtn').disabled = false;
   }
 };
 
