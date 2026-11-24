@@ -8,13 +8,14 @@
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="apple-touch-icon" href="favicon.svg">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Jost:wght@300;400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Great+Vibes&family=Jost:wght@300;400;500&display=swap');
   :root{
     --paper:#f6f1e7; --paper-2:#efe8dc; --stone:#e4dccd;
     --ink:#231f1a; --ink-soft:#4a4338; --muted:#8b8172;
     --line:#d8cfbe; --gold:#a9894f; --gold-deep:#7c6236;
     --stage:#211e19; --stage-line:#332d25;
     --serif:'Cormorant Garamond',Georgia,serif;
+    --script:'Great Vibes','Brush Script MT',cursive;
     --sans:'Jost',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
   }
   *{box-sizing:border-box}
@@ -34,8 +35,8 @@
     padding:26px clamp(20px,5vw,64px) 20px;border-bottom:1px solid var(--line);
   }
   .brand{
-    font-family:var(--serif);font-size:clamp(36px,4.4vw,60px);font-weight:500;
-    line-height:.9;letter-spacing:.012em;text-decoration:none;
+    font-family:var(--script);font-size:clamp(42px,5vw,68px);font-weight:400;
+    line-height:1;letter-spacing:.01em;text-decoration:none;
   }
   .header-center{
     font-size:10px;letter-spacing:.3em;text-transform:uppercase;
@@ -214,6 +215,7 @@
   .btn.instagram{background:transparent;color:var(--ink);border-color:var(--line)}
   .btn.instagram:hover{background:var(--paper-2);border-color:var(--gold)}
   .btn svg.ig-logo{width:17px;height:17px;flex:0 0 auto}
+  .btn svg.wa-logo{width:16px;height:16px;flex:0 0 auto}
   .btn-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
   .status{font-size:11px;line-height:1.6;color:var(--muted);margin:10px 0 0;min-height:15px}
   .status.error{color:#a34a42}
@@ -239,7 +241,7 @@
   @media (max-width:700px){
     .site-header{grid-template-columns:1fr auto;padding:18px 18px 14px;gap:12px}
     .header-center{display:none}
-    .brand{font-size:42px}
+    .brand{font-size:46px}
     .header-links{gap:16px}
     .workspace{padding:22px 16px calc(120px + env(safe-area-inset-bottom));display:block}
     .intro{grid-template-columns:1fr;gap:0;margin-bottom:16px}
@@ -316,7 +318,7 @@
       <canvas id="canvas" width="900" height="1200"></canvas>
       <div class="stage-top">
         <div class="cam-state" id="camState">Cámara sin activar</div>
-        <div class="counter" id="counter">💫 Cargando…</div>
+        <div class="counter" id="counter">Cargando…</div>
       </div>
       <div class="pieza-activa" id="piezaActiva"></div>
       <div class="placeholder" id="placeholder">
@@ -403,7 +405,7 @@
         <button class="btn" id="shotBtn">Tomar foto</button>
         <button class="btn secondary" id="shareBtn" style="display:none">Compartir</button>
       </div>
-      <button class="btn whatsapp" id="waBtn" style="margin-top:8px">Pedir esta joya por WhatsApp</button>
+      <button class="btn whatsapp" id="waBtn" style="margin-top:8px"><svg class="wa-logo" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.04 2C6.5 2 2.1 6.4 2.1 11.94c0 1.75.46 3.46 1.34 4.96L2 22l5.24-1.37a9.9 9.9 0 0 0 4.8 1.22h.01c5.54 0 10.04-4.5 10.04-10.04 0-2.68-1.04-5.2-2.93-7.09A9.95 9.95 0 0 0 12.04 2Zm0 18.15h-.01a8.2 8.2 0 0 1-4.18-1.15l-.3-.18-3.11.81.83-3.03-.2-.31a8.18 8.18 0 0 1-1.26-4.36c0-4.53 3.69-8.21 8.23-8.21 2.2 0 4.27.86 5.82 2.42a8.16 8.16 0 0 1 2.41 5.81c0 4.53-3.69 8.2-8.23 8.2Zm4.5-6.14c-.25-.13-1.46-.72-1.68-.8-.23-.09-.39-.13-.56.13-.16.25-.64.8-.79.97-.14.16-.29.18-.54.06-.25-.13-1.04-.39-1.99-1.23-.73-.65-1.23-1.46-1.37-1.71-.15-.25-.02-.38.11-.51.11-.11.25-.29.37-.43.13-.15.17-.25.25-.42.08-.16.04-.31-.02-.44-.06-.13-.56-1.34-.76-1.84-.2-.48-.4-.42-.56-.43h-.47c-.16 0-.44.06-.67.31-.23.25-.88.86-.88 2.1s.9 2.43 1.02 2.6c.13.16 1.76 2.69 4.26 3.77.6.26 1.06.41 1.42.53.6.19 1.14.16 1.57.1.48-.07 1.46-.6 1.67-1.17.2-.58.2-1.07.14-1.17-.06-.11-.23-.16-.48-.29Z"/></svg><span id="waLabel">Pedir esta joya por WhatsApp</span></button>
       <a class="btn instagram" href="https://www.instagram.com/solennamx/" target="_blank" rel="noopener" style="margin-top:8px"><svg class="ig-logo" viewBox="0 0 24 24" aria-hidden="true"><defs><linearGradient id="igGradB" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#feda75"/><stop offset=".28" stop-color="#fa7e1e"/><stop offset=".52" stop-color="#d62976"/><stop offset=".76" stop-color="#962fbf"/><stop offset="1" stop-color="#4f5bd5"/></linearGradient></defs><rect width="24" height="24" rx="7" fill="url(#igGradB)"/><rect x="4.6" y="4.6" width="14.8" height="14.8" rx="4.6" fill="none" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="none" stroke="#fff" stroke-width="2"/><circle cx="17.1" cy="6.9" r="1.3" fill="#fff"/></svg>Síguenos en Instagram</a>
       <div class="result" id="result">
         <img id="resultImg" alt="Tu prueba">
@@ -606,13 +608,13 @@ function leerContador(){
 }
 function pintarContador(d){
   const total = Object.values(d.porPieza).reduce((a,b)=>a+b,0);
-  if (total === 0){ counterEl.textContent = '💫 Sé la primera persona en probarlo hoy'; return; }
-  if (total === 1){ counterEl.textContent = '💫 1 persona se lo probó hoy'; return; }
+  if (total === 0){ counterEl.textContent = 'Sé la primera persona en probarlo hoy'; return; }
+  if (total === 1){ counterEl.textContent = '1 persona se lo probó hoy'; return; }
   const top = Object.entries(d.porPieza)
     .filter(([,n]) => n > 0)
     .sort((a,b) => b[1]-a[1])[0];
   const detalle = top ? ` · ${nombreDe(top[0])} ×${top[1]}` : '';
-  counterEl.textContent = `💫 ${total} personas se lo probaron hoy${detalle}`;
+  counterEl.textContent = `${total} personas se lo probaron hoy${detalle}`;
 }
 function registrarPrueba(){
   try {
@@ -945,9 +947,9 @@ function syncControls(){
   const agotado = p && p.stock !== undefined && p.stock <= 0;
   const wa = document.getElementById('waBtn');
   wa.disabled = !!agotado;
-  wa.textContent = agotado ? 'Pieza agotada' : 'Pedir esta joya por WhatsApp';
-  document.getElementById('piezaActiva').textContent = p ? `${p.nombre} · ${p.id}` : '';
-  document.getElementById('ajustePieza').textContent = p ? `ID ${p.id}` : '';
+  document.getElementById('waLabel').textContent = agotado ? 'Pieza agotada' : 'Pedir esta joya por WhatsApp';
+  document.getElementById('piezaActiva').textContent = p ? p.nombre : '';
+  document.getElementById('ajustePieza').textContent = '';
   const precio = p ? (p.precio > 0 ? `$${p.precio}` : 'Precio a consulta') : '';
   const stock = p ? (p.stock > 0 ? `${p.stock} disponibles` : (p.stock === 0 ? 'Agotada' : '')) : '';
   document.getElementById('piezaDetalle').textContent = p
