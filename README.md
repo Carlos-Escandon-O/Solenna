@@ -97,7 +97,8 @@ El panel incluye un apartado **«Quitar fondo con IA»**: subes una foto de la j
 
 - La librería se carga desde CDN y el modelo (~40 MB) se descarga la primera vez; luego queda en caché.
 - La imagen nunca se envía a un servidor externo: todo el procesamiento es local.
-- Puedes **descargar el PNG** con transparencia o **reemplazar la imagen de una pieza existente** del catálogo (sube el PNG a `assets/` con tu token de GitHub). No hace falta editar `catalogo.json`.
+- Puedes **descargar el PNG**, **reemplazar la imagen de una pieza existente** o **crear un producto nuevo**: el panel rellena nombre, categoría (tipo de joya), material y precio de forma provisional a partir del nombre del archivo, y tú los editas antes de publicar.
+- Al crear un producto nuevo se sube el PNG a `assets/` y se agrega la entrada a `catalogo.json` (ID, stock `1`, `src` y `recortar: false` se generan solos). No hace falta editar ningún archivo a mano.
 - Para publicar necesitas el token con permiso `Contents: read and write`.
 
 > La librería `@imgly/background-removal` es de código abierto bajo licencia **AGPL**; para un uso comercial se requiere licencia de IMG.LY.

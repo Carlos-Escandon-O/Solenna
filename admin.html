@@ -20,6 +20,9 @@
   input,select{width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);font-size:14px}
   .grid-form{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   @media(max-width:640px){.grid-form{grid-template-columns:1fr}}
+  .bloque{border-top:1px dashed var(--line);padding-top:14px;margin-top:14px}
+  .bloque h3{font-size:13px;margin:0 0 8px;letter-spacing:.04em}
+  .campo-auto{font-size:11px;color:var(--muted);margin:10px 0 0}
   .btn{display:inline-block;padding:12px 18px;border:0;border-radius:11px;background:linear-gradient(135deg,#c99a37,#a8761f);color:#fff;font-size:14px;font-weight:600;cursor:pointer}
   .btn:disabled{opacity:.5;cursor:not-allowed}
   .btn.secondary{background:#fff;color:var(--ink);border:1px solid var(--line);font-weight:500}
@@ -158,7 +161,45 @@
       </div>
     </div>
 
-    <p class="hint">La primera vez descarga el modelo (~40 MB) y puede tardar un poco; después queda en caché. Para publicar el resultado elige una pieza existente: no hace falta editar <code>catalogo.json</code>.</p>
+    <div id="nuevoDiv" class="bloque hidden">
+      <h3>Agregar como producto nuevo</h3>
+      <p class="resumen" style="margin:0 0 12px">Estos datos son provisionales: cámbialos antes de publicar. Después podrás ajustar todo desde el inventario.</p>
+      <div class="grid-form">
+        <div>
+          <label for="nuevoNombre">Nombre</label>
+          <input type="text" id="nuevoNombre" placeholder="Ej. Anillo Aurora">
+        </div>
+        <div>
+          <label for="nuevoTipo">Categoría (tipo de joya)</label>
+          <select id="nuevoTipo">
+            <option value="aretes">aretes</option>
+            <option value="collar">collar</option>
+            <option value="anillo">anillo</option>
+            <option value="pulsera">pulsera</option>
+          </select>
+        </div>
+        <div>
+          <label for="nuevoMaterial">Material</label>
+          <select id="nuevoMaterial">
+            <option value="oro">oro</option>
+            <option value="plata">plata</option>
+            <option value="perlas">perlas</option>
+            <option value="piedras">piedras</option>
+          </select>
+        </div>
+        <div>
+          <label for="nuevoPrecio">Precio ($ MXN)</label>
+          <input type="number" id="nuevoPrecio" min="1" step="10" value="100">
+        </div>
+      </div>
+      <p class="campo-auto">El ID, el stock (1), la ruta <code>assets/…</code> y <code>recortar: false</code> se generan solos.</p>
+      <div class="btn-row">
+        <button class="btn" id="crearProductoBtn">Subir imagen y agregar producto</button>
+      </div>
+      <p class="msg" id="nuevoMsg"></p>
+    </div>
+
+    <p class="hint">La primera vez descarga el modelo (~40 MB) y puede tardar un poco; después queda en caché. Puedes reemplazar la imagen de una pieza existente o crear una pieza nueva con los datos provisionales.</p>
   </section>
 </main>
 
@@ -167,6 +208,8 @@ const TOKEN_KEY = 'solenna_admin_token';
 const REPO_KEY = 'solenna_admin_repo';
 const FILE = 'catalogo.json';
 const BRANCH = 'main';
+const TIPOS = ['aretes','collar','anillo','pulsera'];
+const CATS = ['oro','plata','perlas','piedras'];
 
 const $ = id => document.getElementById(id);
 let sha = '';
@@ -192,6 +235,10 @@ function headers(){
 }
 function repo(){ return $('repo').value.trim(); }
 function msg(el, texto, tipo=''){ el.textContent = texto; el.className = 'msg ' + tipo; }
+async function fallo(r){
+  const j = await r.json().catch(()=>({}));
+  return new Error(j.message || ('HTTP ' + r.status));
+}
 
 async function cargar(){
   const r = await fetch(`https://api.github.com/repos/${repo()}/contents/${FILE}?ref=${BRANCH}`, { headers: headers() });
@@ -212,14 +259,12 @@ function opciones(valor, valores){
 }
 
 function pintar(){
-  const tipos = ['aretes','collar','anillo','pulsera'];
-  const cats = ['oro','plata','perlas','piedras'];
   $('tbody').innerHTML = datos.map((p,i) => `
     <tr class="${Number(p.stock)<=0?'agotada':''}" data-i="${i}">
       <td><input data-campo="id" value="${p.id||''}"></td>
       <td><input data-campo="nombre" value="${(p.nombre||'').replace(/"/g,'&quot;')}"></td>
-      <td><select data-campo="tipo">${opciones(p.tipo,tipos)}</select></td>
-      <td><select data-campo="cat">${opciones(p.cat,cats)}</select></td>
+      <td><select data-campo="tipo">${opciones(p.tipo,TIPOS)}</select></td>
+      <td><select data-campo="cat">${opciones(p.cat,CATS)}</select></td>
       <td class="num"><input data-campo="precio" type="number" min="0" step="10" value="${p.precio??0}"></td>
       <td class="num"><input data-campo="stock" type="number" min="0" step="1" value="${p.stock??0}"></td>
       <td><input data-campo="src" value="${p.src||''}" placeholder="assets/..."></td>
@@ -266,8 +311,8 @@ function validar(){
     if(!p.id || !p.nombre || !p.precio || p.precio<=0) return 'Toda pieza necesita ID, nombre y precio mayor a 0.';
     if(ids.has(p.id)) return 'ID repetido: ' + p.id;
     ids.add(p.id);
-    if(!['aretes','collar','anillo','pulsera'].includes(p.tipo)) return 'Tipo inválido en ' + p.id;
-    if(!['oro','plata','perlas','piedras'].includes(p.cat)) return 'Categoría inválida en ' + p.id;
+    if(!TIPOS.includes(p.tipo)) return 'Tipo inválido en ' + p.id;
+    if(!CATS.includes(p.cat)) return 'Categoría inválida en ' + p.id;
   }
   return '';
 }
@@ -359,12 +404,61 @@ async function base64DeBlob(blob){
   return btoa(bin);
 }
 
+/* ---- Datos provisionales para dar de alta una pieza nueva ---- */
+function nombreDesdeArchivo(nombre){
+  const base = String(nombre||'').replace(/\.[^.]+$/,'').replace(/[-_]+/g,' ').trim();
+  return base ? base.replace(/\b\w/g, c => c.toUpperCase()) : 'Nueva joya';
+}
+function tipoDesdeTexto(texto){
+  const t = String(texto||'').toLowerCase();
+  if (t.includes('arete')) return 'aretes';
+  if (t.includes('collar') || t.includes('cadena')) return 'collar';
+  if (t.includes('pulsera')) return 'pulsera';
+  return 'anillo';
+}
+function materialDesdeTexto(texto){
+  const t = String(texto||'').toLowerCase();
+  if (t.includes('plata')) return 'plata';
+  if (t.includes('perla')) return 'perlas';
+  if (t.includes('piedra') || t.includes('cuarzo') || t.includes('amatista')) return 'piedras';
+  return 'oro';
+}
+function slugDe(texto){
+  return String(texto||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
+    .replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,32) || 'joya';
+}
+function siguienteId(){
+  const nums = datos.map(p => parseInt(String(p.id||'').replace(/^\D+/,''),10)).filter(n => Number.isFinite(n));
+  const next = Math.max(0, ...nums) + 1;
+  const pref = { aretes:'a', collar:'c', anillo:'r', pulsera:'p' }[$('nuevoTipo').value] || 'p';
+  return pref + String(next).padStart(2,'0');
+}
+function prepararNuevo(archivo){
+  $('nuevoNombre').value = nombreDesdeArchivo(archivo && archivo.name);
+  $('nuevoTipo').value = tipoDesdeTexto(archivo && archivo.name);
+  $('nuevoMaterial').value = materialDesdeTexto(archivo && archivo.name);
+  $('nuevoPrecio').value = 100;
+  $('nuevoDiv').classList.remove('hidden');
+  msg($('nuevoMsg'),'Revisa los datos antes de publicar.');
+}
+async function rutaLibre(path){
+  for (let n=0; n<10; n++){
+    const r = await fetch(`https://api.github.com/repos/${repo()}/contents/${path}?ref=${BRANCH}`, { headers: headers() });
+    if (r.status === 404) return path;
+    if (!r.ok) throw new Error('No se pudo revisar ' + path);
+    path = path.replace(/(\.\w+)$/, `-${n+2}$1`);
+  }
+  throw new Error('No encontré un nombre de archivo libre');
+}
+
 $('quitarBtn').onclick = async () => {
   const f = $('fondoFile').files && $('fondoFile').files[0];
   if (!f){ msg($('fondoMsg'),'Elige una foto primero.','error'); return; }
   resultadoBlob = null;
   $('descargarBtn').disabled = true;
   $('reemplazoDiv').classList.add('hidden');
+  $('nuevoDiv').classList.add('hidden');
+  msg($('nuevoMsg'),'');
   $('previewWrap').classList.add('hidden');
   $('quitarBtn').disabled = true;
   msg($('fondoMsg'),'');
@@ -386,7 +480,8 @@ $('quitarBtn').onclick = async () => {
     $('previewWrap').classList.remove('hidden');
     $('descargarBtn').disabled = false;
     $('reemplazoDiv').classList.remove('hidden');
-    msg($('fondoMsg'),'✅ Fondo eliminado. Ya puedes descargarlo o reemplazar una pieza.','ok');
+    prepararNuevo(f);
+    msg($('fondoMsg'),'✅ Fondo eliminado. Puedes descargarlo, reemplazar una pieza o crear una nueva.','ok');
   }catch(e){
     msg($('fondoMsg'),'No se pudo procesar: ' + (e.message||e) + '. Revisa tu conexión.','error');
     $('progresoDiv').classList.add('hidden');
@@ -437,6 +532,61 @@ $('reemplazarBtn').onclick = async () => {
     msg($('fondoMsg'),'No se pudo subir: ' + (e.message||e) + '. Revisa el token y su permiso Contents: read and write.','error');
   }finally{
     $('reemplazarBtn').disabled = false;
+  }
+};
+
+$('crearProductoBtn').onclick = async () => {
+  if (!resultadoBlob){ msg($('nuevoMsg'),'Primero quita el fondo a una foto.','error'); return; }
+  const nombre = $('nuevoNombre').value.trim();
+  const tipo = $('nuevoTipo').value;
+  const material = $('nuevoMaterial').value;
+  const precio = Number($('nuevoPrecio').value);
+  if (!nombre){ msg($('nuevoMsg'),'Escribe un nombre para la pieza.','error'); return; }
+  if (!precio || precio <= 0){ msg($('nuevoMsg'),'Pon un precio mayor a 0.','error'); return; }
+  if (!TIPOS.includes(tipo) || !CATS.includes(material)){ msg($('nuevoMsg'),'Revisa la categoría y el material.','error'); return; }
+
+  leerTabla();
+  const locales = datos.map(p => ({ ...p }));
+  $('crearProductoBtn').disabled = true;
+  msg($('nuevoMsg'),'Subiendo imagen a GitHub…');
+  try{
+    const path = await rutaLibre(`assets/${slugDe(nombre)}-${Date.now().toString().slice(-6)}.png`);
+    const putImg = await fetch(`https://api.github.com/repos/${repo()}/contents/${path}`, {
+      method:'PUT', headers: headers(),
+      body: JSON.stringify({
+        message: 'Agregar imagen desde el panel de Solenna',
+        content: await base64DeBlob(resultadoBlob),
+        branch: BRANCH
+      })
+    });
+    if (!putImg.ok) throw await fallo(putImg);
+
+    const catR = await fetch(`https://api.github.com/repos/${repo()}/contents/${FILE}?ref=${BRANCH}`, { headers: headers() });
+    if (!catR.ok) throw await fallo(catR);
+    const catJ = await catR.json();
+
+    const id = siguienteId();
+    locales.push({ id, nombre, tipo, cat:material, precio, stock:1, src:path, recortar:false });
+    const saveR = await fetch(`https://api.github.com/repos/${repo()}/contents/${FILE}`, {
+      method:'PUT', headers: headers(),
+      body: JSON.stringify({
+        message: 'Agregar pieza desde el panel de Solenna',
+        content: b64encode(JSON.stringify(locales, null, 2)),
+        sha: catJ.sha,
+        branch: BRANCH
+      })
+    });
+    if (!saveR.ok) throw await fallo(saveR);
+    sha = (await saveR.json()).content.sha;
+    datos = locales;
+    pintar();
+    msg($('nuevoMsg'), `✅ "${nombre}" agregada como ${id}.`, 'ok');
+    msg($('panelMsg'), `✅ Producto ${id} agregado al catálogo.`, 'ok');
+    $('nuevoDiv').classList.add('hidden');
+  }catch(e){
+    msg($('nuevoMsg'), 'No se pudo crear el producto: ' + (e.message||e) + '. Revisa el token y su permiso Contents: read and write.', 'error');
+  }finally{
+    $('crearProductoBtn').disabled = false;
   }
 };
 
