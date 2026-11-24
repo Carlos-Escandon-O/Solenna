@@ -805,6 +805,20 @@ function ocluir(pathFn){
   ctx.drawImage(frameSource, 0,0,canvas.width,canvas.height);
   ctx.restore();
 }
+/* Tapa solo el tramo de cadena que pasa por detrás del cuello.
+   El borde inferior queda casi a la altura de los hombros: si baja más,
+   la joya se corta antes del cuello y parece flotar. */
+function pathCuello(c, lm){
+  const chin=P(lm,152), fore=P(lm,10), jawL=P(lm,234), jawR=P(lm,454);
+  const fh=Math.hypot(fore.x-chin.x, fore.y-chin.y);
+  const jaw=Math.hypot(jawR.x-jawL.x, jawR.y-jawL.y);
+  c.ellipse((jawL.x+jawR.x)/2, chin.y - fh*0.10, jaw*0.34, fh*0.15, 0, 0, Math.PI*2);
+}
+function pathHombros(c, h){
+  const cx=(h.a.x+h.b.x)/2, cy=(h.a.y+h.b.y)/2;
+  const ang=Math.atan2(h.b.y-h.a.y, h.b.x-h.a.x);
+  c.ellipse(cx, cy - h.sep*0.22, h.sep*0.20, h.sep*0.17, ang, 0, Math.PI*2);
+}
 /* Oculta solo la mitad "de atrás" (la de arriba), dejando un arco continuo */
 /* El tracker decide qué mitad queda atrás usando la profundidad (z) */
 function ladoLejano(hand, eje, iA, iB){
@@ -865,9 +879,11 @@ function drawNecklace(lm, hombros){
     w = jaw * 1.75 * o.scale;
   } else return;
   const h = w * (img.naturalHeight / img.naturalWidth || 0.8);
-  // Sin recortes: la cadena debe llegar hasta la base del cuello.
-  // Un clip ovalado la cortaba antes y dejaba el dije "flotando".
   drawImg(img, cx, topY, w, h, ang, 0.10);
+  // Solo se oculta el cuello; el corte es más alto que antes para que la
+  // cadena llegue al cuello y no quede flotando sobre el pecho.
+  if (hombros) ocluir(c => pathHombros(c, hombros));
+  else if (lm) ocluir(c => pathCuello(c, lm));
 }
 function drawRings(landmarks){
   if (!landmarks || !landmarks.length) return;
