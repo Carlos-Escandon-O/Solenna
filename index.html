@@ -430,11 +430,12 @@
 <footer>Solenna · Joyería contemporánea · <a href="https://www.instagram.com/solennamx/" target="_blank" rel="noopener">Instagram</a> · <a href="admin.html">Administración</a></footer>
 
 <script type="module">
-import { FaceLandmarker, HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
+import { FaceLandmarker, HandLandmarker, PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
 
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const FACE_MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 const HAND_MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const POSE_MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
 /* ============================================================
    CONFIGURACIÓN DEL NEGOCIO  ← edita aquí
@@ -452,10 +453,12 @@ const cardStatus = document.getElementById('cardStatus');
 const placeholder = document.getElementById('placeholder');
 const counterEl = document.getElementById('counter');
 
-let faceLandmarker, handLandmarker, faceImg, handImg, imgModelsPromise;
+let faceLandmarker, handLandmarker, poseLandmarker, faceImg, handImg, poseImg, imgModelsPromise;
 let ready = false, looping = false, lastTime = 0;
 // Seguimiento temporal de la mano: evita que la joya parpadee cuando el detector la pierde
 let manoSuavizada = null, framesConMano = 0, framesSinMano = 0;
+// Hombros suavizados: los collares se anclan al cuello, no a la cabeza
+let hombrosSuavizados = null;
 
 const state = {
   tipo: 'aretes',
@@ -652,13 +655,18 @@ async function initModels(){
   document.getElementById('startBtn').disabled = false;
   setStatus('Listo. Activa tu cámara cuando quieras.');
   if (state.modo === 'camara' && !state.cameraOn) setCamState('Cámara sin activar');
+  // El modelo de postura se carga aparte: si falla, los collares usan la cara como respaldo
+  buildLandmarker(PoseLandmarker, POSE_MODEL, { numPoses:1 })
+    .then(p => { poseLandmarker = p; })
+    .catch(() => { poseLandmarker = null; });
 }
 function ensureImageModels(){
   if (!imgModelsPromise){
     imgModelsPromise = Promise.all([
       buildLandmarker(FaceLandmarker, FACE_MODEL, { numFaces:1 }, 'IMAGE'),
-      buildLandmarker(HandLandmarker, HAND_MODEL, { numHands:2, minHandDetectionConfidence:0.35, minHandPresenceConfidence:0.35, minTrackingConfidence:0.35 }, 'IMAGE')
-    ]).then(([f,h]) => { faceImg = f; handImg = h; });
+      buildLandmarker(HandLandmarker, HAND_MODEL, { numHands:2, minHandDetectionConfidence:0.35, minHandPresenceConfidence:0.35, minTrackingConfidence:0.35 }, 'IMAGE'),
+      buildLandmarker(PoseLandmarker, POSE_MODEL, { numPoses:1 }, 'IMAGE').catch(() => null)
+    ]).then(([f,h,p]) => { faceImg = f; handImg = h; poseImg = p; });
   }
   return imgModelsPromise;
 }
@@ -747,6 +755,37 @@ function manoEstable(detectadas){
   if (framesSinMano === 0 && framesConMano < 2) return null;
   return [manoSuavizada];
 }
+/* Hombros estables: los collares se anclan al cuello, no a la mandíbula */
+function hombrosDesdePose(poses){
+  const pose = poses && poses[0];
+  if (!pose || pose.length < 33) return null;
+  // MediaPipe no garantiza el orden 11/12 en la imagen: ordenar por x evita
+  // que la línea de hombros se invierta (~180°) y voltee la joya hacia la cara.
+  const [a, b] = [P(pose,11), P(pose,12)].sort((p,q) => p.x - q.x);
+  const sep = Math.hypot(b.x-a.x, b.y-a.y);
+  if (sep < canvas.width*0.10) return null;
+  return { a, b, sep };
+}
+function hombrosEstables(poses){
+  const actual = hombrosDesdePose(poses);
+  if (!actual){ hombrosSuavizados = null; return null; }
+  if (!hombrosSuavizados){ hombrosSuavizados = actual; return actual; }
+  const k = 0.35;
+  hombrosSuavizados = {
+    a: { x: hombrosSuavizados.a.x*(1-k)+actual.a.x*k, y: hombrosSuavizados.a.y*(1-k)+actual.a.y*k },
+    b: { x: hombrosSuavizados.b.x*(1-k)+actual.b.x*k, y: hombrosSuavizados.b.y*(1-k)+actual.b.y*k },
+    sep: hombrosSuavizados.sep*(1-k)+actual.sep*k
+  };
+  return hombrosSuavizados;
+}
+function posesVideo(now){
+  if (!poseLandmarker) return null;
+  try { return poseLandmarker.detectForVideo(video, now).landmarks; } catch(e){ return null; }
+}
+function posesFoto(){
+  if (!poseImg || !state.photo) return null;
+  try { return poseImg.detect(state.photo).landmarks; } catch(e){ return null; }
+}
 function imagenActiva(){
   return state.pieza && state.pieza.tipo === state.tipo ? state.pieza.img : null;
 }
@@ -771,6 +810,12 @@ function pathCuello(c, lm){
   const fh=Math.hypot(fore.x-chin.x, fore.y-chin.y);
   const jaw=Math.hypot(jawR.x-jawL.x, jawR.y-jawL.y);
   c.ellipse((jawL.x+jawR.x)/2, chin.y + fh*0.12, jaw*0.42, fh*0.30, 0, 0, Math.PI*2);
+}
+function pathHombros(c, h){
+  const cx=(h.a.x+h.b.x)/2, cy=(h.a.y+h.b.y)/2;
+  const ang=Math.atan2(h.b.y-h.a.y, h.b.x-h.a.x);
+  // La piel del cuello tapa la parte alta de la joya; el resto cae sobre el pecho
+  c.ellipse(cx, cy - h.sep*0.16, h.sep*0.24, h.sep*0.30, ang, 0, Math.PI*2);
 }
 /* Oculta solo la mitad "de atrás" (la de arriba), dejando un arco continuo */
 /* El tracker decide qué mitad queda atrás usando la profundidad (z) */
@@ -811,26 +856,41 @@ function drawEarrings(lm){
     ctx.restore();
   });
 }
-function drawNecklace(lm){
-  const chin = P(lm,152), fore = P(lm,10), jawL = P(lm,234), jawR = P(lm,454);
-  const fh = Math.hypot(fore.x-chin.x, fore.y-chin.y);
-  const jaw = Math.hypot(jawR.x-jawL.x, jawR.y-jawL.y);
+function drawNecklace(lm, hombros){
   const o = state.offsets.collar, img = imagenActiva();
-  const cx = (jawL.x+jawR.x)/2 + o.x*canvas.width;
-  const topY = chin.y + fh*0.10 + o.y*canvas.height;
-  const w = jaw * 1.75 * o.scale;
+  if (!usable(img)) return;
+  let cx, topY, w, ang = 0;
+  if (hombros){
+    // Anclaje real en hombros/cuello: girar la cabeza no mueve la joya
+    const { a, b, sep } = hombros;
+    cx = (a.x+b.x)/2 + o.x*canvas.width;
+    topY = (a.y+b.y)/2 - sep*0.10 + o.y*canvas.height;
+    w = sep * 1.02 * o.scale;
+    ang = Math.atan2(b.y-a.y, b.x-a.x);
+  } else if (lm){
+    // Respaldo si el modelo de postura no detecta hombros
+    const chin = P(lm,152), fore = P(lm,10), jawL = P(lm,234), jawR = P(lm,454);
+    const fh = Math.hypot(fore.x-chin.x, fore.y-chin.y);
+    const jaw = Math.hypot(jawR.x-jawL.x, jawR.y-jawL.y);
+    cx = (jawL.x+jawR.x)/2 + o.x*canvas.width;
+    topY = chin.y + fh*0.10 + o.y*canvas.height;
+    w = jaw * 1.75 * o.scale;
+  } else return;
   const h = w * (img.naturalHeight / img.naturalWidth || 0.8);
   if (state.pieza && state.pieza.recortar){
     ctx.save();
+    ctx.translate(cx, topY);
+    ctx.rotate(ang);
     ctx.beginPath();
-    ctx.rect(0, topY + h*0.16, canvas.width, canvas.height);
+    ctx.rect(-w*2, h*0.16, w*4, canvas.height*2);
     ctx.clip();
-    drawImg(img, cx, topY, w, h, 0, 0.10);
+    ctx.drawImage(img, -w/2, -h*0.10, w, h);
     ctx.restore();
   } else {
-    drawImg(img, cx, topY, w, h, 0, 0.10);
+    drawImg(img, cx, topY, w, h, ang, 0.10);
   }
-  ocluir(c => pathCuello(c, lm));
+  if (hombros) ocluir(c => pathHombros(c, hombros));
+  else if (lm) ocluir(c => pathCuello(c, lm));
 }
 function drawRings(landmarks){
   if (!landmarks || !landmarks.length) return;
@@ -884,13 +944,11 @@ function drawPulseras(landmarks){
   ocluir(c => pathMitad(c, {x:cx,y:cy}, {x:ux,y:uy}, h*0.62, ladoOculto));
 }
 function usaManos(){ return state.tipo === 'anillo' || state.tipo === 'pulsera'; }
-function pintarSobre(faces, hands){
+function pintarSobre(faces, hands, poses){
   if (state.tipo === 'anillo') drawRings(hands);
   else if (state.tipo === 'pulsera') drawPulseras(hands);
-  else if (faces && faces.length){
-    if (state.tipo === 'aretes') drawEarrings(faces[0]);
-    else drawNecklace(faces[0]);
-  }
+  else if (state.tipo === 'collar') drawNecklace(faces && faces[0], poses);
+  else if (faces && faces.length) drawEarrings(faces[0]);
 }
 
 /* ---------- Loop cámara ---------- */
@@ -902,8 +960,12 @@ function loop(){
     ctx.drawImage(video,0,0,canvas.width,canvas.height);
     const now = Math.max(performance.now(), lastTime+1);
     lastTime = now;
-    if (usaManos()) pintarSobre(null, manoEstable(handLandmarker.detectForVideo(video,now).landmarks));
-    else pintarSobre(faceLandmarker.detectForVideo(video,now).faceLandmarks, null);
+    if (usaManos()) pintarSobre(null, manoEstable(handLandmarker.detectForVideo(video,now).landmarks), null);
+    else {
+      const faces = faceLandmarker.detectForVideo(video,now).faceLandmarks;
+      const hombros = state.tipo === 'collar' ? hombrosEstables(posesVideo(now)) : null;
+      pintarSobre(faces, null, hombros);
+    }
   }
   requestAnimationFrame(loop);
 }
@@ -916,8 +978,12 @@ function renderPhoto(){
   ctx.drawImage(state.photo,0,0,canvas.width,canvas.height);
   if (usaManos()) {
     const L = (handImg.detect(state.photo).landmarks || []).filter(esMano);
-    pintarSobre(null, L);
-  } else pintarSobre(faceImg.detect(state.photo).faceLandmarks, null);
+    pintarSobre(null, L, null);
+  } else {
+    const faces = faceImg.detect(state.photo).faceLandmarks;
+    const hombros = state.tipo === 'collar' ? hombrosEstables(posesFoto()) : null;
+    pintarSobre(faces, null, hombros);
+  }
   document.getElementById('result').classList.remove('show');
 }
 function refrescar(){
@@ -988,7 +1054,7 @@ function seleccionarPieza(id){
 }
 function setModo(modo){
   state.modo = modo;
-  manoSuavizada = null; framesConMano = 0; framesSinMano = 0;
+  manoSuavizada = null; framesConMano = 0; framesSinMano = 0; hombrosSuavizados = null;
   document.querySelectorAll('#modoTabs .tab').forEach(b => b.classList.toggle('active', b.dataset.modo===modo));
   document.getElementById('photoRow').style.display = modo==='foto' ? 'block' : 'none';
   canvas.style.transform = modo==='camara' ? 'scaleX(-1)' : 'none';
@@ -1054,6 +1120,7 @@ document.getElementById('photoInput').onchange = e => {
     canvas.width = Math.round(img.naturalWidth*s);
     canvas.height = Math.round(img.naturalHeight*s);
     state.photo = img;
+    hombrosSuavizados = null;
     placeholder.classList.add('hidden');
     setCamState('Foto cargada');
     renderPhoto();
@@ -1071,7 +1138,7 @@ document.getElementById('quitarFotoBtn').onclick = () => {
   document.getElementById('result').classList.remove('show');
   document.getElementById('shareBtn').style.display = 'none';
   setCardStatus('');
-  manoSuavizada = null; framesConMano = 0; framesSinMano = 0;
+  manoSuavizada = null; framesConMano = 0; framesSinMano = 0; hombrosSuavizados = null;
   placeholder.classList.remove('hidden');
   setCamState('Sin foto');
   setStatus('Foto eliminada. Elige otra imagen o activa la cámara.');
