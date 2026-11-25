@@ -432,6 +432,56 @@
 <script type="module">
 import { FaceLandmarker, HandLandmarker, PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
 
+/* ============================================================================
+ * GUÍA DE MANTENIMIENTO — PROBADOR VIRTUAL DE SOLENNA
+ * ----------------------------------------------------------------------------
+ * Este módulo es todo el probador: cámara, foto, catálogo, ajustes, captura,
+ * descarga, compartir y WhatsApp. No hay build ni frameworks: se sirve tal cual
+ * desde GitHub Pages. Por eso cualquier cambio debe hacerse con cuidado y
+ * probarse en escritorio y en móvil.
+ *
+ * FLUJO GENERAL
+ *   1. `initModels()` carga Face/Hand/Pose y habilita el botón de cámara.
+ *   2. El usuario elige pieza → `seleccionarPieza()` → `state.pieza`/`state.tipo`.
+ *   3. Cada fotograma (cámara) o cada ajuste (foto) vuelve a dibujar el canvas:
+ *        `loop()` o `renderPhoto()` → `pintarSobre()` → drawEarrings /
+ *        drawNecklace / drawRings / drawPulseras.
+ *   4. `snapshot()` copia el canvas a una imagen PNG para descargar, compartir
+ *      o adjuntar al mensaje de WhatsApp (el enlace va en el texto, no en la foto).
+ *
+ * DOS MODOS, UN MISMO CANVAS
+ *   - Cámara: `state.modo === 'camara'`. El video se dibuja en el canvas y el
+ *     canvas se muestra espejado con CSS (`scaleX(-1)`). `snapshot()` deshace
+ *     el espejo para que la foto final coincida con lo que ve el usuario.
+ *   - Foto: `state.modo === 'foto'`. La imagen subida se dibuja sin espejo y se
+ *     vuelve a procesar cada vez que cambia un ajuste (`refrescar()`).
+ *
+ * LANDMARKS QUE SE USAN (coordenadas normalizadas 0..1 → píxeles con `P()`)
+ *   Cara: 10 frente, 152 mentón, 234/454 mandíbula, 33/133/362/263 ojos,
+ *         234/127/93/132 y 454/356/323/361 orejas.
+ *   Postura: 11/12 hombros. Se ordenan por X antes de calcular el ángulo;
+ *            si no, MediaPipe puede invertirlos y girar la joya ~180°.
+ *   Mano: 0 muñeca, 5/9/13/17 nudillos, 6/10/14/18 PIP, 2 pulgar.
+ *
+ * REGLAS DE OCLUSIÓN (que la joya parezca "puesta")
+ *   - Collar: `pathHombros()` tapa solo la parte que pasa por detrás del cuello.
+ *     El borde inferior está pensado para quedar casi a la altura de los hombros:
+ *     bajarlo más hace que la cadena se corte antes del cuello y flote.
+ *   - Pulsera: `pathMitad()` tapa media vuelta del aro con la piel original.
+ *   - Anillo: se dibuja completo (decisión de diseño; no lleva oclusión).
+ *
+ * DÓNDE AJUSTAR CADA COSA
+ *   - Número de WhatsApp y baseline del contador: bloque CONFIGURACIÓN DEL NEGOCIO.
+ *   - Paleta/tipografía: variables CSS en `:root`.
+ *   - Ajustes por defecto y por pieza: `AJUSTES_POR_TIPO` y `state.offsets`.
+ *   - Tamaño/posición del collar: `drawNecklace()` (topY, w y ángulo).
+ *   - Cortes del cuello: `pathCuello()` / `pathHombros()`.
+ *   - Filtros de mano falsa: `esMano()`.
+ *   - Catálogo real: `catalogo.json` (este archivo solo es respaldo).
+ * ============================================================================ */
+
+// MediaPipe se carga desde CDN: sin instalación, pero requiere HTTPS o localhost.
+// `buildLandmarker()` intenta GPU y cae a CPU si el dispositivo no la soporta.
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const FACE_MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 const HAND_MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
@@ -439,12 +489,17 @@ const POSE_MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmar
 
 /* ============================================================
    CONFIGURACIÓN DEL NEGOCIO  ← edita aquí
+   ------------------------------------------------------------
+   WHATSAPP: código país + número, sin "+" ni espacios. Cuando empiece con
+   521000 el botón solo copia el texto al portapapeles (modo demo).
+   BASE_PRUEBAS_REALES_POR_PIEZA: solo conteos REALMENTE documentados.
+   Ejemplo: { a1: 2, c3: 1 }. Nunca inventar: es publicidad engañosa.
    ============================================================ */
 const WHATSAPP = "525539753964";         // 52 + 55 3975 3964
-// Baseline SOLO con pruebas reales documentadas. Ejemplo: { a1: 2, c3: 1, r2: 1 }
 const BASE_PRUEBAS_REALES_POR_PIEZA = {};
 /* ============================================================ */
 
+/* Referencias al DOM. Se guardan una sola vez porque el HTML no se recarga. */
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -453,13 +508,24 @@ const cardStatus = document.getElementById('cardStatus');
 const placeholder = document.getElementById('placeholder');
 const counterEl = document.getElementById('counter');
 
+/* Detectores. Los sufijos IMG son instancias en modo IMAGE (foto); las otras
+   son en modo VIDEO (cámara). MediaPipe no permite mezclar modos en una misma
+   instancia, por eso hay dos juegos. */
 let faceLandmarker, handLandmarker, poseLandmarker, faceImg, handImg, poseImg, imgModelsPromise;
 let ready = false, looping = false, lastTime = 0;
-// Seguimiento temporal de la mano: evita que la joya parpadee cuando el detector la pierde
+
+/* Memoria temporal de seguimiento. Se reinicia al cambiar de modo, de foto o
+   al quitar la foto para evitar "saltos" de una imagen a otra. */
+// Mano: evita parpadeos cuando el detector la pierde durante unos fotogramas.
 let manoSuavizada = null, framesConMano = 0, framesSinMano = 0;
-// Hombros suavizados: los collares se anclan al cuello, no a la cabeza
+// Hombros: los collares se anclan al cuello, no a la mandíbula.
 let hombrosSuavizados = null;
 
+/**
+ * Estado global de la interfaz. No se persiste en localStorage: solo dura la
+ * sesión. Lo que SÍ se recuerda es el ajuste de cada pieza (ver `porPieza`).
+ * `offsets` son fracciones del canvas (x/y) y multiplicador de tamaño (scale).
+ */
 const state = {
   tipo: 'aretes',
   pieza: null,
@@ -478,43 +544,61 @@ const state = {
   }
 };
 
-/* Ajustes independientes por pieza: se recuerdan al cambiar de joya */
+/* Valores iniciales de los sliders por tipo de joya. Se usan cuando no existe
+   un ajuste guardado para esa pieza concreta (ver `cargarAjustes`). */
 const AJUSTES_POR_TIPO = {
   aretes: { x: 0, y: 0.012, scale: 1 },
   collar: { x: 0, y: 0.02, scale: 1 },
   anillo: { x: 0, y: 0, scale: 1 },
   pulsera: { x: 0, y: 0, scale: 1 }
 };
+/** Guarda los offsets actuales bajo el ID de la pieza activa (memoria de sesión). */
 function guardarAjustes(){
   if (state.pieza) state.porPieza[state.pieza.id] = { ...state.offsets[state.tipo] };
 }
+/** Restaura los offsets de `p`: primero los defaults de su tipo, luego los suyos. */
 function cargarAjustes(p){
   if (!p) return;
   const base = AJUSTES_POR_TIPO[p.tipo] || AJUSTES_POR_TIPO.aretes;
   state.offsets[p.tipo] = { ...base, ...(state.porPieza[p.id] || {}) };
 }
+/** Traduce la clave corta `cat` del catálogo a texto para la interfaz. */
 function materialDe(p){
   return ({ oro:'Oro', plata:'Plata', perlas:'Perlas', piedras:'Piedras' })[p && p.cat] || (p && p.cat) || 'Material no indicado';
 }
+/** Escribe el estado de la cámara en la esquina superior del escenario. */
 function setCamState(texto){
   document.getElementById('camState').textContent = texto;
 }
 
+/* Landmarks de MediaPipe usados para colocar anillos: pip = articulación media
+   del dedo, mcp = nudillo. El índice 3/2 es el pulgar. El orden debe coincidir
+   con las opciones del `<select id="dedo">`. */
 const DEDOS = [
   { pip: 6, mcp: 5 }, { pip: 10, mcp: 9 }, { pip: 14, mcp: 13 },
   { pip: 18, mcp: 17 }, { pip: 3, mcp: 2 }
 ];
 
-/* ---------- Generación de piezas de ejemplo ---------- */
+/* ---------- Generación de piezas de ejemplo ----------
+   Estas imágenes SVG son SOLO un respaldo visual: si `catalogo.json` no trae
+   `src`, se genera una joya genérica por tipo/material. Las piezas reales del
+   inventario usan PNG en `assets/`. No mezclar con la paleta editorial del
+   sitio: son ilustraciones, no parte del diseño de la marca. */
 const PALETAS = {
   oro:     { m1:'#fff4c2', m2:'#e9bd3c', m3:'#a9700c', g1:'#ffffff', g2:'#d6f0ff', g3:'#59a8d4' },
   plata:   { m1:'#ffffff', m2:'#d7dde3', m3:'#8f9aa5', g1:'#ffffff', g2:'#e8f4ff', g3:'#9fb8c9' },
   perlas:  { m1:'#fff8e1', m2:'#e8d3a0', m3:'#ab8c52', g1:'#ffffff', g2:'#fff6ee', g3:'#e6d6c6' },
   piedras: { m1:'#f6e3b0', m2:'#c9a24a', m3:'#8a6a1e', g1:'#f3d9ff', g2:'#b57bd9', g3:'#5d2a8c' }
 };
+/** Codifica un SVG como data URI para poder usarlo en `<img>` y en canvas. */
 const svgURI = s => 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
+/** Carga una imagen de forma asíncrona; `usable()` comprueba después si ya llegó. */
 function loadImg(src){ const i = new Image(); i.src = src; return i; }
 
+/**
+ * Devuelve el data URI de una joya ilustrada según tipo y material.
+ * Se usa únicamente cuando la pieza no tiene imagen propia (`src`).
+ */
 function jewelSVG(tipo, cat){
   const p = PALETAS[cat];
   const defs = `<defs>
@@ -555,6 +639,11 @@ function jewelSVG(tipo, cat){
   return svgURI(`<svg ${ns} width="400" height="320" viewBox="0 0 400 320">${defs}${body}</svg>`);
 }
 
+/* Catálogo de respaldo, embebido para que el probador funcione sin red.
+   Fuente de verdad: `catalogo.json` (editado desde `admin.html`). Al cargar ese
+   archivo, `armarCatalogo()` reemplaza por completo este arreglo.
+   Claves: id, nombre, tipo (aretes/collar/anillo/pulsera), cat (oro/plata/
+   perlas/piedras), precio, stock, src (PNG en assets/) y recortar. */
 let CATALOGO = [
   { id:'c5', nombre:'Collar Vaquero',  tipo:'collar', cat:'oro',     precio:850, stock:3, src:'assets/collar-vaquero.png', recortar:true },
   { id:'a1', nombre:'Aretes Sol',      tipo:'aretes', cat:'oro',     precio:380 },
@@ -579,6 +668,11 @@ state.pieza = CATALOGO[0];
 state.tipo = state.pieza.tipo;
 cargarAjustes(state.pieza);
 
+/**
+ * Sustituye el catálogo de respaldo por los datos reales de `catalogo.json`.
+ * Después de cambiar el inventario hay que sincronizar: pieza, tipo, ajustes,
+ * cuadrícula, controles y contador. Si el archivo está vacío no se hace nada.
+ */
 function armarCatalogo(datos){
   if (!Array.isArray(datos) || !datos.length) return;
   CATALOGO = datos.map(p => ({ ...p, img: loadImg(p.src || jewelSVG(p.tipo, p.cat)) }));
@@ -589,6 +683,7 @@ function armarCatalogo(datos){
   syncControls();
   pintarContador(leerContador());
 }
+/** Lee `catalogo.json` sin caché para que los cambios del Admin se vean al recargar. */
 async function cargarCatalogo(){
   try {
     const r = await fetch('catalogo.json', { cache:'no-store' });
@@ -596,12 +691,18 @@ async function cargarCatalogo(){
   } catch(e){ /* sin conexión: se usa el catálogo interno */ }
 }
 
-/* ---------- Contador social (real, por día / sesión / pieza) ---------- */
+/* ---------- Contador social (real, por día / sesión / pieza) ----------
+   Se guarda en localStorage con la fecha de hoy; al cambiar de día se empieza
+   de cero. sessionStorage evita contar dos veces la misma sesión. Es un valor
+   LOCAL del visitante: no es un contador global de servidor.
+   Nunca mostrar cifras inventadas: solo `BASE_PRUEBAS_REALES_POR_PIEZA`. */
 function hoy(){
   const d = new Date();
   return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
 }
+/** Busca el nombre de una pieza por ID; si ya no existe, muestra el ID. */
 function nombreDe(id){ return CATALOGO.find(p => p.id===id)?.nombre || id; }
+/** Devuelve el conteo de hoy, renovado con la baseline real si es otro día. */
 function leerContador(){
   try {
     const d = JSON.parse(localStorage.getItem('solenna_contador') || 'null');
@@ -609,6 +710,7 @@ function leerContador(){
   } catch(e){}
   return { fecha: hoy(), porPieza: { ...BASE_PRUEBAS_REALES_POR_PIEZA } };
 }
+/** Pinta el texto del contador, destacando la pieza más probada. Sin emoji. */
 function pintarContador(d){
   const total = Object.values(d.porPieza).reduce((a,b)=>a+b,0);
   if (total === 0){ counterEl.textContent = 'Sé la primera persona en probarlo hoy'; return; }
@@ -619,6 +721,8 @@ function pintarContador(d){
   const detalle = top ? ` · ${nombreDe(top[0])} ×${top[1]}` : '';
   counterEl.textContent = `${total} personas se lo probaron hoy${detalle}`;
 }
+/** Cuenta una prueba por sesión y por pieza; se llama al activar cámara,
+    subir foto o seleccionar una joya distinta. */
 function registrarPrueba(){
   try {
     if (sessionStorage.getItem('solenna_conto')) return;
@@ -631,7 +735,17 @@ function registrarPrueba(){
   pintarContador(d);
 }
 
-/* ---------- Modelos ---------- */
+/* ---------- Modelos ----------
+   MediaPipe necesita un juego de detectores por modo de ejecución: VIDEO para
+   la cámara e IMAGE para fotos. No se pueden mezclar en la misma instancia.
+   Todos los modelos se descargan de CDN la primera vez y luego quedan en caché. */
+/**
+ * Crea un detector y retry en CPU si el dispositivo no soporta GPU.
+ * @param {Function} Klass FaceLandmarker | HandLandmarker | PoseLandmarker
+ * @param {string} model URL del archivo `.task`
+ * @param {object} extra opciones específicas (número de manos, caras, etc.)
+ * @param {'VIDEO'|'IMAGE'} runningMode
+ */
 async function buildLandmarker(Klass, model, extra, runningMode = 'VIDEO'){
   const opts = {
     baseOptions: { modelAssetPath: model, delegate: 'GPU' },
@@ -644,6 +758,11 @@ async function buildLandmarker(Klass, model, extra, runningMode = 'VIDEO'){
     return await Klass.createFromOptions(fileset, opts);
   }
 }
+/**
+ * Arranca los detectores de cámara y habilita el botón de cámara al terminar.
+ * Pose se carga aparte y en segundo plano: si falla, los collares caen al
+ * respaldo facial (`drawNecklace`) en vez de dejar la joya sin dibujar.
+ */
 async function initModels(){
   setStatus('Cargando modelos… (unos segundos)');
   setCamState('Preparando modelo…');
@@ -660,6 +779,9 @@ async function initModels(){
     .then(p => { poseLandmarker = p; })
     .catch(() => { poseLandmarker = null; });
 }
+/** Crea (una sola vez) los detectores en modo IMAGE y los guarda en `faceImg`,
+    `handImg` y `poseImg`. Devuelve siempre la misma promesa para no descargar
+    los modelos dos veces si el usuario cambia de foto rápidamente. */
 function ensureImageModels(){
   if (!imgModelsPromise){
     imgModelsPromise = Promise.all([
@@ -671,7 +793,10 @@ function ensureImageModels(){
   return imgModelsPromise;
 }
 
-/* ---------- Cámara ---------- */
+/* ---------- Cámara ----------
+   Se pide `facingMode:user` (cámara frontal). El video se mantiene oculto y se
+   dibuja en el canvas; el efecto espejo se aplica con CSS sobre el canvas. */
+/** Pide permiso, ajusta el canvas a la resolución real del video y arranca el loop. */
 async function startCamera(){
   if (!ready){
     setCamState('Preparando modelo…');
@@ -706,13 +831,18 @@ async function startCamera(){
   }
 }
 
-/* ---------- Dibujo ---------- */
+/* ---------- Dibujo ----------
+   MediaPipe da coordenadas normalizadas (0..1); `P()` y `avg()` las convierten
+   a píxeles del canvas. Toda la geometría de las joyas se calcula en píxeles. */
+/** Convierte un landmark normalizado a coordenadas de canvas. */
 const P = (lm,i) => ({ x: lm[i].x * canvas.width, y: lm[i].y * canvas.height });
+/** Promedio de varios landmarks (útil para centros de ojos, orejas, etc.). */
 function avg(lm, ids){
   let x=0,y=0;
   ids.forEach(i=>{ x+=lm[i].x*canvas.width; y+=lm[i].y*canvas.height; });
   return { x:x/ids.length, y:y/ids.length };
 }
+/** Verdadero cuando la imagen ya cargó y se puede pintar en el canvas. */
 function usable(img){ return img && img.complete && img.naturalWidth > 0; }
 /* El detector a veces confunde una cara con una mano (mandíbula → muñeca).
    Validamos la geometría de la palma. Acepta también el puño cerrado. */
@@ -732,7 +862,11 @@ function esMano(lm){
   // El primer hueso de cada dedo existe tanto con la mano abierta como cerrada
   return d(5,6) > palma*0.07 && d(17,18) > palma*0.06;
 }
-/* Mantiene la última mano válida durante unos fotogramas y suaviza el movimiento */
+/**
+ * Filtra detecciones falsas y suaviza el seguimiento de la mano.
+ * Confirma 2 fotogramas antes de dibujar y conserva la última mano válida
+ * hasta 10 fotogramas sin detección para evitar parpadeos.
+ */
 function manoEstable(detectadas){
   const nueva = (detectadas || []).find(esMano);
   if (nueva){
@@ -755,7 +889,11 @@ function manoEstable(detectadas){
   if (framesSinMano === 0 && framesConMano < 2) return null;
   return [manoSuavizada];
 }
-/* Hombros estables: los collares se anclan al cuello, no a la mandíbula */
+/* ---------- Anclaje del collar ----------
+   Los collares se anclan a los hombros (landmarks 11 y 12 de Pose), no a la
+   mandíbula: así girar la cabeza no arrastra la joya. Si Pose no detecta
+   hombros se usa la cara como respaldo. */
+/** Extrae hombros ordenados por X, su separación y descarta detecciones absurdas. */
 function hombrosDesdePose(poses){
   const pose = poses && poses[0];
   if (!pose || pose.length < 33) return null;
@@ -766,6 +904,7 @@ function hombrosDesdePose(poses){
   if (sep < canvas.width*0.10) return null;
   return { a, b, sep };
 }
+/** Interpolación suave (k=0.35) para que la joya no salte entre fotogramas. */
 function hombrosEstables(poses){
   const actual = hombrosDesdePose(poses);
   if (!actual){ hombrosSuavizados = null; return null; }
@@ -778,17 +917,25 @@ function hombrosEstables(poses){
   };
   return hombrosSuavizados;
 }
+/** Detecta postura en el video (cámara). Devuelve null si Pose no está listo. */
 function posesVideo(now){
   if (!poseLandmarker) return null;
   try { return poseLandmarker.detectForVideo(video, now).landmarks; } catch(e){ return null; }
 }
+/** Detecta postura en la foto subida (modelo en modo IMAGE). */
 function posesFoto(){
   if (!poseImg || !state.photo) return null;
   try { return poseImg.detect(state.photo).landmarks; } catch(e){ return null; }
 }
+/** Imagen de la pieza seleccionada, solo si coincide con el tipo activo. */
 function imagenActiva(){
   return state.pieza && state.pieza.tipo === state.tipo ? state.pieza.img : null;
 }
+/**
+ * Dibuja la joya centrada en (cx,cy) con rotación y punto de anclaje vertical.
+ * `anchorY=0.10` deja la mayor parte de la imagen por debajo del punto (collares);
+ * `anchorY=0.5` la centra (anillos).
+ */
 function drawImg(img, cx, cy, w, h, rot=0, anchorY=0.5){
   if (!usable(img)) return;
   ctx.save(); ctx.translate(cx,cy); ctx.rotate(rot);
@@ -796,8 +943,13 @@ function drawImg(img, cx, cy, w, h, rot=0, anchorY=0.5){
   ctx.restore();
 }
 
-/* Vuelve a dibujar el fotograma recortado a una zona: el cuerpo tapa la joya */
+/* ---------- Oclusión ----------
+   Para que la joya parezca puesta, se vuelve a dibujar el fotograma original
+   (video o foto) dentro de una forma recortada. Esa "capa de piel" tapa la
+   parte de la joya que debería quedar detrás del cuerpo. */
+/* Fuente del fotograma actual: video en cámara, imagen en modo foto. */
 let frameSource = null;
+/** Vuelve a pintar el fotograma dentro de la forma que defina `pathFn`. */
 function ocluir(pathFn){
   if (!frameSource) return;
   ctx.save();
@@ -808,19 +960,23 @@ function ocluir(pathFn){
 /* Tapa solo el tramo de cadena que pasa por detrás del cuello.
    El borde inferior queda casi a la altura de los hombros: si baja más,
    la joya se corta antes del cuello y parece flotar. */
+/** Forma de respaldo alrededor del cuello cuando no hay datos de postura. */
 function pathCuello(c, lm){
   const chin=P(lm,152), fore=P(lm,10), jawL=P(lm,234), jawR=P(lm,454);
   const fh=Math.hypot(fore.x-chin.x, fore.y-chin.y);
   const jaw=Math.hypot(jawR.x-jawL.x, jawR.y-jawL.y);
   c.ellipse((jawL.x+jawR.x)/2, chin.y - fh*0.10, jaw*0.34, fh*0.15, 0, 0, Math.PI*2);
 }
+/** Forma de oclusión anclada a hombros. No bajar el borde (`sep*0.22`):
+    se cortaría la cadena antes del cuello y la joya parecería flotar. */
 function pathHombros(c, h){
   const cx=(h.a.x+h.b.x)/2, cy=(h.a.y+h.b.y)/2;
   const ang=Math.atan2(h.b.y-h.a.y, h.b.x-h.a.x);
   c.ellipse(cx, cy - h.sep*0.22, h.sep*0.20, h.sep*0.17, ang, 0, Math.PI*2);
 }
-/* Oculta solo la mitad "de atrás" (la de arriba), dejando un arco continuo */
-/* El tracker decide qué mitad queda atrás usando la profundidad (z) */
+/* Oculta solo la mitad "de atrás" (la de arriba), dejando un arco continuo.
+   El tracker decide qué mitad queda atrás usando la profundidad (z). */
+/** Devuelve +1/-1 según qué lado del eje esté más lejos de la cámara. */
 function ladoLejano(hand, eje, iA, iB){
   const a=P(hand,iA), b=P(hand,iB);
   const proj=(b.x-a.x)*eje.x + (b.y-a.y)*eje.y;
@@ -828,6 +984,7 @@ function ladoLejano(hand, eje, iA, iB){
   if(Math.abs(dz) < 0.01) return eje.y >= 0 ? -1 : 1;
   return (dz * (proj >= 0 ? 1 : -1)) >= 0 ? 1 : -1;
 }
+/** Construye un rectángulo enorme a un lado del eje para tapar media joya. */
 function pathMitad(c, punto, eje, largo, lado){
   const nx=eje.x*lado, ny=eje.y*lado;
   const ancho=canvas.width*2, tx=-ny, ty=nx;
@@ -837,6 +994,7 @@ function pathMitad(c, punto, eje, largo, lado){
   c.lineTo(punto.x-tx*ancho, punto.y-ty*ancho);
   c.closePath();
 }
+/** Coloca un arete en cada oreja (landmarks 234/454 y alrededores) con espejo. */
 function drawEarrings(lm){
   const earA = avg(lm,[234,127,93,132]);
   const earB = avg(lm,[454,356,323,361]);
@@ -858,6 +1016,14 @@ function drawEarrings(lm){
     ctx.restore();
   });
 }
+/**
+ * Dibuja el collar y aplica la oclusión del cuello.
+ * Con hombros: ancho y giro vienen de la línea 11→12 y `topY` se sube
+ * `sep*0.22` desde esa línea (altura real del cuello).
+ * Sin hombros: usa mandíbula y frente como respaldo.
+ * IMPORTANTE: `pathHombros()`/`pathCuello()` se ajustan por separado; el corte
+ * actual funcionaba bien y solo se subió la posición de la joya.
+ */
 function drawNecklace(lm, hombros){
   const o = state.offsets.collar, img = imagenActiva();
   if (!usable(img)) return;
@@ -885,6 +1051,8 @@ function drawNecklace(lm, hombros){
   if (hombros) ocluir(c => pathHombros(c, hombros));
   else if (lm) ocluir(c => pathCuello(c, lm));
 }
+/** Coloca el anillo en la articulación media del dedo elegido en `state.dedo`.
+    Se dibuja completo: no lleva oclusión (decisión de diseño). */
 function drawRings(landmarks){
   if (!landmarks || !landmarks.length) return;
   const hand = landmarks[0], f = DEDOS[state.dedo];
@@ -901,6 +1069,7 @@ function drawRings(landmarks){
   // Sin corte: el anillo se ve completo (el usuario prefiere la imagen tal cual)
   drawImg(img, px, py, w, h, ang + Math.PI/2, 0.5);
 }
+/** Dibuja media pulsera sobre la muñeca y tapa la otra mitad con la piel original. */
 function drawPulseras(landmarks){
   if (!landmarks || !landmarks.length) return;
   const hand = landmarks[0];
@@ -936,7 +1105,9 @@ function drawPulseras(landmarks){
   // la pulsera se mete detrás de la muñeca en lugar de flotar.
   ocluir(c => pathMitad(c, {x:cx,y:cy}, {x:ux,y:uy}, h*0.62, ladoOculto));
 }
+/** Las joyas de mano usan el detector de manos; las demás, cara/postura. */
 function usaManos(){ return state.tipo === 'anillo' || state.tipo === 'pulsera'; }
+/** Despacha el dibujo al módulo correspondiente según `state.tipo`. */
 function pintarSobre(faces, hands, poses){
   if (state.tipo === 'anillo') drawRings(hands);
   else if (state.tipo === 'pulsera') drawPulseras(hands);
@@ -944,7 +1115,10 @@ function pintarSobre(faces, hands, poses){
   else if (faces && faces.length) drawEarrings(faces[0]);
 }
 
-/* ---------- Loop cámara ---------- */
+/* ---------- Loop cámara ----------
+   Un `requestAnimationFrame` por fotograma: dibuja el video y vuelve a detectar
+   landmarks. `lastTime` se incrementa a mano porque MediaPipe exige tiempos
+   estrictamente crecientes entre detecciones. */
 function loop(){
   if (state.modo !== 'camara' || !state.cameraOn){ looping = false; return; }
   if (video.readyState >= 2){
@@ -963,7 +1137,10 @@ function loop(){
   requestAnimationFrame(loop);
 }
 
-/* ---------- Modo foto ---------- */
+/* ---------- Modo foto ----------
+   No hay loop: la imagen se vuelve a procesar solo cuando cambia un ajuste.
+   La foto se escala como máximo a 1400 px para no sobrecargar los detectores. */
+/** Vuelve a dibujar la foto y detectar landmarks con los modelos en modo IMAGE. */
 function renderPhoto(){
   if (!state.photo || !faceImg || !handImg) return;
   frameSource = state.photo;
@@ -979,21 +1156,27 @@ function renderPhoto(){
   }
   document.getElementById('result').classList.remove('show');
 }
+/** Se llama después de mover un slider o cambiar de pieza/dedo. */
 function refrescar(){
   if (state.modo === 'foto' && state.photo) renderPhoto();
   document.getElementById('result').classList.remove('show');
 }
 
-/* ---------- UI ---------- */
+/* ---------- UI ----------
+   Funciones puras de interfaz: textos de estado, sincronización de controles y
+   render de la cuadrícula del catálogo. No contienen lógica de detección. */
 function setStatus(msg, isError=false){
   statusEl.textContent = msg || '';
   statusEl.classList.toggle('error', isError);
 }
+/** Estado junto a la captura (distinto del estado de cámara). */
 function setCardStatus(msg, isError=false){
   cardStatus.textContent = msg || '';
   cardStatus.classList.toggle('error', isError);
 }
+/** Escapa datos del catálogo antes de interpolarlos en HTML (evita XSS). */
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]);
+/** Refleja `state` en todos los controles: sliders, pestañas, botón de WhatsApp y etiquetas. */
 function syncControls(){
   const o = state.offsets[state.tipo];
   ['x','y','scale'].forEach(id => {
@@ -1015,6 +1198,7 @@ function syncControls(){
     ? [materialDe(p), precio, stock].filter(Boolean).join(' · ')
     : '';
 }
+/** Pinta el catálogo aplicando filtro de material y orden (precio/nombre). */
 function pintarGrid(){
   let items = CATALOGO.filter(p => state.filtro==='todos' || p.cat===state.filtro);
   if (state.orden==='asc') items = [...items].sort((a,b)=>(a.precio>0?a.precio:Infinity)-(b.precio>0?b.precio:Infinity));
@@ -1036,6 +1220,7 @@ function pintarGrid(){
   }).join('');
   document.querySelectorAll('.pieza').forEach(b => b.onclick = () => seleccionarPieza(b.dataset.id));
 }
+/** Cambia la joya activa, conservando el ajuste que tuviera guardado. */
 function seleccionarPieza(id){
   const p = CATALOGO.find(x => x.id===id);
   if (!p) return;
@@ -1045,6 +1230,8 @@ function seleccionarPieza(id){
   cargarAjustes(p);
   syncControls(); pintarGrid(); refrescar(); registrarPrueba();
 }
+/** Alterna cámara/foto. El espejo CSS solo aplica en cámara; aquí también se
+    reinicia la memoria de manos y hombros para no arrastrar detecciones viejas. */
 function setModo(modo){
   state.modo = modo;
   manoSuavizada = null; framesConMano = 0; framesSinMano = 0; hombrosSuavizados = null;
@@ -1067,6 +1254,7 @@ function setModo(modo){
   }
 }
 
+/* Pestañas: modo (cámara/foto), tipo de joya y filtros de material. */
 document.querySelectorAll('#modoTabs .tab').forEach(b => b.onclick = () => setModo(b.dataset.modo));
 document.querySelectorAll('#tipoTabs .tab').forEach(b => b.onclick = () => {
   guardarAjustes();
@@ -1081,6 +1269,7 @@ document.querySelectorAll('#filtros .chip').forEach(b => b.onclick = () => {
   state.filtro = b.dataset.filtro;
   pintarGrid();
 });
+/* Orden del catálogo y dedo elegido para anillos. */
 document.getElementById('orden').onchange = e => { state.orden = e.target.value; pintarGrid(); };
 document.getElementById('dedo').onchange = e => { state.dedo = parseInt(e.target.value); refrescar(); };
 /* Los sliders del panel y los de la barra móvil manejan el mismo valor */
@@ -1096,11 +1285,14 @@ document.getElementById('dedo').onchange = e => { state.dedo = parseInt(e.target
   document.getElementById(id).oninput = aplicar;
   document.getElementById(mid).oninput = aplicar;
 });
+/** "Centrar" vuelve a los valores por tipo y olvida el ajuste de esta pieza. */
 document.getElementById('resetBtn').onclick = () => {
   state.offsets[state.tipo] = { ...(AJUSTES_POR_TIPO[state.tipo] || AJUSTES_POR_TIPO.aretes) };
   guardarAjustes();
   syncControls(); refrescar();
 };
+/** Sube una selfie: espera a que cargue, prepara detectores IMAGE y adapta
+    el canvas a la resolución real de la imagen (máx. 1400 px por lado). */
 document.getElementById('photoInput').onchange = e => {
   const f = e.target.files && e.target.files[0];
   if (!f) return;
@@ -1122,6 +1314,8 @@ document.getElementById('photoInput').onchange = e => {
   };
   img.src = URL.createObjectURL(f);
 };
+/* Reemplazar / eliminar la foto. Al quitarla también se oculta el resultado
+   anterior y se limpia la memoria de seguimiento. */
 document.getElementById('cambiarFotoBtn').onclick = () => document.getElementById('photoInput').click();
 document.getElementById('quitarFotoBtn').onclick = () => {
   state.photo = null;
@@ -1137,7 +1331,10 @@ document.getElementById('quitarFotoBtn').onclick = () => {
   setStatus('Foto eliminada. Elige otra imagen o activa la cámara.');
 };
 
-/* ---------- Resultado / WhatsApp ---------- */
+/* ---------- Resultado / WhatsApp ----------
+   La captura se genera siempre desde el canvas, nunca desde el video. En cámara
+   se deshace el espejo para que la imagen final coincida con lo que ve el usuario. */
+/** Devuelve la captura como data URL PNG (misma imagen para descargar, compartir y WhatsApp). */
 function snapshot(){
   const t = document.createElement('canvas');
   t.width = canvas.width; t.height = canvas.height;
@@ -1146,6 +1343,7 @@ function snapshot(){
   c.drawImage(canvas,0,0);
   return t.toDataURL('image/png');
 }
+/** Muestra la foto capturada y habilita descarga/compartir. */
 document.getElementById('shotBtn').onclick = () => {
   const activo = state.modo==='camara' ? state.cameraOn : !!state.photo;
   if (!activo){ setStatus('Primero activa la cámara o sube una foto.', true); return; }
@@ -1156,6 +1354,7 @@ document.getElementById('shotBtn').onclick = () => {
   setCardStatus('Foto lista para descargar o compartir.');
   if (navigator.share) document.getElementById('shareBtn').style.display = 'block';
 };
+/** Web Share API: adjunta el PNG si el dispositivo lo permite; si no, no hace nada. */
 document.getElementById('shareBtn').onclick = async () => {
   try {
     const blob = await (await fetch(snapshot())).blob();
@@ -1163,6 +1362,11 @@ document.getElementById('shareBtn').onclick = async () => {
     if (navigator.canShare && navigator.canShare({files:[file]})) await navigator.share({files:[file], title:'Mi prueba en Solenna'});
   } catch(e){}
 };
+/**
+ * Abre WhatsApp con un mensaje que incluye nombre, ID y enlace a la foto real
+ * de la pieza (`src`). El número de teléfono NO se muestra en la página.
+ * Modo demo: si WHATSAPP empieza con 521000, solo copia el texto.
+ */
 document.getElementById('waBtn').onclick = () => {
   const p = state.pieza;
   if (!p) return;
@@ -1179,7 +1383,8 @@ document.getElementById('waBtn').onclick = () => {
 /* Barra móvil: Centrar usa la misma acción del panel */
 document.getElementById('mbCentrar').onclick = () => document.getElementById('resetBtn').click();
 
-/* Pantalla completa de la vista (escritorio) */
+/* Pantalla completa de la vista (escritorio). Se usa la API nativa cuando
+   existe y, si el navegador la bloquea, una clase CSS de respaldo. */
 const stageEl = document.querySelector('.stage');
 const fsBtn = document.getElementById('fsBtn');
 function enFullscreen(){
@@ -1222,6 +1427,9 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && stageEl.classList.contains('is-fullscreen')) salirPantalla();
 });
 
+/* ---------- Arranque ----------
+   Orden importante: pintar contador/catálogo/controles antes de pedir permisos
+   o descargar modelos, para que la interfaz nunca quede vacía si algo falla. */
 document.getElementById('startBtn').onclick = startCamera;
 canvas.style.transform = 'scaleX(-1)';
 pintarContador(leerContador());

@@ -204,28 +204,67 @@
 </main>
 
 <script>
+/* ============================================================================
+ * GUÍA DE MANTENIMIENTO — PANEL ADMIN DE SOLENNA
+ * ----------------------------------------------------------------------------
+ * Panel estático (sin build ni servidor propio) para editar `catalogo.json` y
+ * las imágenes de `assets/` directamente en GitHub. Se sirve desde GitHub Pages.
+ *
+ * FLUJO GENERAL
+ *   1. El usuario pega un Personal Access Token con permiso `Contents: read and
+ *      write` sobre el repo. Se guarda en localStorage (solo en su navegador).
+ *   2. `cargar()` lee `catalogo.json` desde la API de GitHub y guarda su `sha`.
+ *      Ese `sha` es obligatorio para poder sobreescribir el archivo.
+ *   3. La tabla edita un arreglo en memoria (`datos`). `leerTabla()` traspasa
+ *      los cambios de los inputs a ese arreglo antes de guardar o validar.
+ *   4. `guardarBtn` hace un PUT del JSON. `reemplazarBtn` y `crearProductoBtn`
+ *      suben primero el PNG y después actualizan el catálogo.
+ *
+ * ZONAS
+ *   - Token/repo: TOKEN_KEY, REPO_KEY y `$('entrarBtn')`.
+ *   - Lectura/escritura de GitHub: `cargar()`, `guardarBtn`.
+ *   - Tabla del inventario: `pintar()`, `leerTabla()`, `validar()`.
+ *   - Quitar fondo con IA: `getRemover()` y `$('quitarBtn')`.
+ *   - Reemplazar imagen: `$('reemplazarBtn')`.
+ *   - Crear pieza nueva: `prepararNuevo()` y `$('crearProductoBtn')`.
+ *
+ * REGLAS IMPORTANTES
+ *   - GitHub exige el `sha` actual en cada PUT; si otra persona editó el archivo
+ *     mientras tanto, hay que "Recargar inventario" antes de guardar.
+ *   - La API devuelve el contenido en Base64: `b64decode()` para leer,
+ *     `b64encode()` / `base64DeBlob()` para escribir.
+ *   - El token NUNCA se envía a otro servidor: solo a api.github.com.
+ *   - `siguienteId()` evita repetir IDs (el probador usa el ID para el mensaje
+ *     de WhatsApp y para recordar los ajustes de cada pieza).
+ * ============================================================================ */
+
+// Claves de localStorage. El token se guarda solo en este navegador.
 const TOKEN_KEY = 'solenna_admin_token';
 const REPO_KEY = 'solenna_admin_repo';
-const FILE = 'catalogo.json';
-const BRANCH = 'main';
+const FILE = 'catalogo.json';      // archivo editable
+const BRANCH = 'main';             // rama donde Pages publica el sitio
 const TIPOS = ['aretes','collar','anillo','pulsera'];
 const CATS = ['oro','plata','perlas','piedras'];
 
+/** Atajo para `document.getElementById`. */
 const $ = id => document.getElementById(id);
-let sha = '';
-let datos = [];
-let resultadoBlob = null;
+let sha = '';            // SHA del catalogo.json actual (requerido por el PUT)
+let datos = [];          // copia en memoria del inventario
+let resultadoBlob = null; // PNG resultante de quitar el fondo
 
+/** Decodifica el contenido Base64 que devuelve la API de GitHub. */
 function b64decode(s){
   const bin = atob(s.replace(/\s/g,''));
   const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
   return new TextDecoder().decode(bytes);
 }
+/** Codifica texto a Base64 para enviarlo a la API de GitHub. */
 function b64encode(str){
   const bytes = new TextEncoder().encode(str);
   let bin=''; bytes.forEach(b => bin += String.fromCharCode(b));
   return btoa(bin);
 }
+/** Cabeceras comunes: el token viaja solo en `Authorization` hacia GitHub. */
 function headers(){
   return {
     'Authorization': 'Bearer ' + $('token').value.trim(),
@@ -233,13 +272,17 @@ function headers(){
     'Content-Type': 'application/json'
   };
 }
+/** Repo con formato `usuario/nombre`, tal como lo escribió el usuario. */
 function repo(){ return $('repo').value.trim(); }
+/** Muestra un mensaje de estado con estilo (ok / error). */
 function msg(el, texto, tipo=''){ el.textContent = texto; el.className = 'msg ' + tipo; }
+/** Extrae el mensaje de error de una respuesta fallida de GitHub. */
 async function fallo(r){
   const j = await r.json().catch(()=>({}));
   return new Error(j.message || ('HTTP ' + r.status));
 }
 
+/** Descarga `catalogo.json`, guarda su SHA y vuelve a pintar la tabla. */
 async function cargar(){
   const r = await fetch(`https://api.github.com/repos/${repo()}/contents/${FILE}?ref=${BRANCH}`, { headers: headers() });
   if(!r.ok){
@@ -254,10 +297,12 @@ async function cargar(){
   pintar();
 }
 
+/** Genera los `<option>` de un `<select>` dejando marcado el valor actual. */
 function opciones(valor, valores){
   return valores.map(v => `<option value="${v}" ${v===valor?'selected':''}>${v}</option>`).join('');
 }
 
+/** Dibuja la tabla desde `datos` y conecta cada input con `leerTabla()`. */
 function pintar(){
   $('tbody').innerHTML = datos.map((p,i) => `
     <tr class="${Number(p.stock)<=0?'agotada':''}" data-i="${i}">
@@ -284,12 +329,14 @@ function pintar(){
   pintarSelect();
 }
 
+/** Llena el selector de "reemplazar imagen" solo con piezas que tienen `src`. */
 function pintarSelect(){
   $('piezaSelect').innerHTML = datos.filter(p => p.src).map(p =>
     `<option value="${String(p.src).replace(/"/g,'&quot;')}">${String(p.nombre||p.id).replace(/"/g,'&quot;')} — ${String(p.src).replace(/"/g,'&quot;')}</option>`
   ).join('');
 }
 
+/** Copia los valores de la tabla a `datos` (checks booleanos y números como Number). */
 function leerTabla(){
   $('tbody').querySelectorAll('tr').forEach(tr => {
     const i = Number(tr.dataset.i);
@@ -305,6 +352,7 @@ function leerTabla(){
   pintarSelect();
 }
 
+/** Comprueba ID único, nombre, precio > 0 y categorías válidas antes de guardar. */
 function validar(){
   const ids = new Set();
   for(const p of datos){
@@ -317,6 +365,7 @@ function validar(){
   return '';
 }
 
+/* ---- Acceso: guarda token/repo y descarga el inventario ---- */
 $('entrarBtn').onclick = async () => {
   const t = $('token').value.trim();
   if(!t){ msg($('loginMsg'),'Pega tu token de GitHub.','error'); return; }
@@ -335,11 +384,13 @@ $('entrarBtn').onclick = async () => {
   }
 };
 
+/** Recarga desde GitHub: descarta cambios sin guardar y renueva el SHA. */
 $('recargarBtn').onclick = async () => {
   try{ leerTabla(); await cargar(); msg($('panelMsg'),'Inventario recargado.','ok'); }
   catch(e){ msg($('panelMsg'),'Error: ' + e.message,'error'); }
 };
 
+/** "Salir": borra el token guardado y vuelve a la pantalla de acceso. */
 $('salirBtn').onclick = () => {
   localStorage.removeItem(TOKEN_KEY);
   $('token').value = '';
@@ -349,12 +400,18 @@ $('salirBtn').onclick = () => {
   msg($('loginMsg'),'','');
 };
 
+/** Agrega una fila provisional; el ID es temporal hasta que se guarde. */
 $('agregarBtn').onclick = () => {
   leerTabla();
   datos.push({ id:'nuevo'+Date.now().toString().slice(-4), nombre:'Nueva pieza', tipo:'aretes', cat:'oro', precio:100, stock:1, src:'', recortar:false });
   pintar();
 };
 
+/**
+ * Guarda todo el inventario en `catalogo.json` mediante PUT a GitHub.
+ * El `sha` actual evita sobrescribir cambios hechos por otra persona.
+ * Pages tarda ~1 minuto en reflejar el cambio.
+ */
 $('guardarBtn').onclick = async () => {
   leerTabla();
   const error = validar();
@@ -382,9 +439,12 @@ $('guardarBtn').onclick = async () => {
   }
 };
 
-/* ---- Quitar fondo con IA, en el navegador (modelo desde CDN) ---- */
-let _remover = null;
-let previewUrl = null;
+/* ---- Quitar fondo con IA, en el navegador (modelo desde CDN) ----
+   La foto NO se sube a ningún servidor propio: el modelo se descarga de esm.sh
+   y corre en el dispositivo. La primera vez son ~40 MB; después queda en caché. */
+let _remover = null;      // función removeBackground ya importada
+let previewUrl = null;    // object URL de la vista previa (hay que liberarlo)
+/** Importa el paquete una sola vez y devuelve su función principal. */
 async function getRemover(){
   if (!_remover){
     const mod = await import('https://esm.sh/@imgly/background-removal@1.7.0');
@@ -392,11 +452,13 @@ async function getRemover(){
   }
   return _remover;
 }
+/** Actualiza la barra de progreso de descarga/recorte. */
 function mostrarProgreso(texto, pct){
   $('progresoDiv').classList.remove('hidden');
   $('progresoTxt').textContent = texto;
   $('progresoBar').style.width = Math.max(0, Math.min(100, pct||0)) + '%';
 }
+/** Convierte un Blob (PNG) a Base64 por bloques para no agotar la pila. */
 async function base64DeBlob(blob){
   const buf = new Uint8Array(await blob.arrayBuffer());
   let bin = '';
@@ -404,11 +466,14 @@ async function base64DeBlob(blob){
   return btoa(bin);
 }
 
-/* ---- Datos provisionales para dar de alta una pieza nueva ---- */
+/* ---- Datos provisionales para dar de alta una pieza nueva ----
+   Se infieren del nombre de archivo para que el usuario solo tenga que revisar. */
+/** "collar-perla.png" → "Collar Perla". */
 function nombreDesdeArchivo(nombre){
   const base = String(nombre||'').replace(/\.[^.]+$/,'').replace(/[-_]+/g,' ').trim();
   return base ? base.replace(/\b\w/g, c => c.toUpperCase()) : 'Nueva joya';
 }
+/** Adivina el tipo de joya por palabras del nombre de archivo. */
 function tipoDesdeTexto(texto){
   const t = String(texto||'').toLowerCase();
   if (t.includes('arete')) return 'aretes';
@@ -416,6 +481,7 @@ function tipoDesdeTexto(texto){
   if (t.includes('pulsera')) return 'pulsera';
   return 'anillo';
 }
+/** Adivina el material/categoría; por defecto `oro`. */
 function materialDesdeTexto(texto){
   const t = String(texto||'').toLowerCase();
   if (t.includes('plata')) return 'plata';
@@ -423,16 +489,19 @@ function materialDesdeTexto(texto){
   if (t.includes('piedra') || t.includes('cuarzo') || t.includes('amatista')) return 'piedras';
   return 'oro';
 }
+/** Normaliza acentos y convierte el nombre en un slug seguro para la ruta PNG. */
 function slugDe(texto){
   return String(texto||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
     .replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,32) || 'joya';
 }
+/** ID nuevo con prefijo por tipo (a/c/r/p) y número consecutivo, p. ej. `c07`. */
 function siguienteId(){
   const nums = datos.map(p => parseInt(String(p.id||'').replace(/^\D+/,''),10)).filter(n => Number.isFinite(n));
   const next = Math.max(0, ...nums) + 1;
   const pref = { aretes:'a', collar:'c', anillo:'r', pulsera:'p' }[$('nuevoTipo').value] || 'p';
   return pref + String(next).padStart(2,'0');
 }
+/** Rellena el formulario de "crear pieza" con los datos inferidos del archivo. */
 function prepararNuevo(archivo){
   $('nuevoNombre').value = nombreDesdeArchivo(archivo && archivo.name);
   $('nuevoTipo').value = tipoDesdeTexto(archivo && archivo.name);
@@ -441,6 +510,7 @@ function prepararNuevo(archivo){
   $('nuevoDiv').classList.remove('hidden');
   msg($('nuevoMsg'),'Revisa los datos antes de publicar.');
 }
+/** Busca un nombre de archivo que no exista: agrega -2, -3, ... antes de la extensión. */
 async function rutaLibre(path){
   for (let n=0; n<10; n++){
     const r = await fetch(`https://api.github.com/repos/${repo()}/contents/${path}?ref=${BRANCH}`, { headers: headers() });
@@ -451,6 +521,8 @@ async function rutaLibre(path){
   throw new Error('No encontré un nombre de archivo libre');
 }
 
+/** Quita el fondo de la foto elegida, muestra vista previa y habilita las
+    acciones de descargar / reemplazar / crear. */
 $('quitarBtn').onclick = async () => {
   const f = $('fondoFile').files && $('fondoFile').files[0];
   if (!f){ msg($('fondoMsg'),'Elige una foto primero.','error'); return; }
@@ -490,6 +562,7 @@ $('quitarBtn').onclick = async () => {
   }
 };
 
+/** Descarga el PNG recortado sin publicarlo en GitHub. */
 $('descargarBtn').onclick = () => {
   if (!resultadoBlob) return;
   const url = URL.createObjectURL(resultadoBlob);
@@ -499,6 +572,10 @@ $('descargarBtn').onclick = () => {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 };
 
+/**
+ * Sobrescribe el PNG de una pieza existente. Si el archivo ya existe se envía
+ * su SHA; si no, se crea uno nuevo. Pide confirmación porque es destructivo.
+ */
 $('reemplazarBtn').onclick = async () => {
   if (!resultadoBlob){ msg($('fondoMsg'),'Primero quita el fondo.','error'); return; }
   const path = $('piezaSelect').value;
@@ -535,6 +612,11 @@ $('reemplazarBtn').onclick = async () => {
   }
 };
 
+/**
+ * Alta completa: sube el PNG a `assets/`, vuelve a leer `catalogo.json` para
+ * tomar su SHA fresco, agrega la pieza con ID nuevo y guarda el catálogo.
+ * Se usa una copia local (`locales`) para no perder cambios si falla la subida.
+ */
 $('crearProductoBtn').onclick = async () => {
   if (!resultadoBlob){ msg($('nuevoMsg'),'Primero quita el fondo a una foto.','error'); return; }
   const nombre = $('nuevoNombre').value.trim();
@@ -590,7 +672,8 @@ $('crearProductoBtn').onclick = async () => {
   }
 };
 
-// Si ya hay token guardado, lo precargamos (pero no entramos automáticamente)
+/* Arranque: precargar token/repo guardados, pero sin entrar automáticamente
+   (así nadie descarga el inventario solo por abrir la página). */
 $('token').value = localStorage.getItem(TOKEN_KEY) || '';
 $('repo').value = localStorage.getItem(REPO_KEY) || $('repo').value;
 </script>
