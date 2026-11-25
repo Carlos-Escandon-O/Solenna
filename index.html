@@ -817,7 +817,7 @@ function pathCuello(c, lm){
 function pathHombros(c, h){
   const cx=(h.a.x+h.b.x)/2, cy=(h.a.y+h.b.y)/2;
   const ang=Math.atan2(h.b.y-h.a.y, h.b.x-h.a.x);
-  c.ellipse(cx, cy - h.sep*0.22, h.sep*0.20, h.sep*0.17, ang, 0, Math.PI*2);
+  c.ellipse(cx, cy - h.sep*0.32, h.sep*0.18, h.sep*0.15, ang, 0, Math.PI*2);
 }
 /* Oculta solo la mitad "de atrás" (la de arriba), dejando un arco continuo */
 /* El tracker decide qué mitad queda atrás usando la profundidad (z) */
@@ -866,7 +866,7 @@ function drawNecklace(lm, hombros){
     // Anclaje real en hombros/cuello: girar la cabeza no mueve la joya
     const { a, b, sep } = hombros;
     cx = (a.x+b.x)/2 + o.x*canvas.width;
-    topY = (a.y+b.y)/2 - sep*0.10 + o.y*canvas.height;
+    topY = (a.y+b.y)/2 - sep*0.22 + o.y*canvas.height;
     w = sep * 1.02 * o.scale;
     ang = Math.atan2(b.y-a.y, b.x-a.x);
   } else if (lm){
