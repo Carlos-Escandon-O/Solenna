@@ -248,15 +248,5 @@
     "stock": 1,
     "src": "assets/pieza-25-arete-marron-oscuro.png",
     "recortar": false
-  },
-  {
-    "id": "c26",
-    "nombre": "HDMI",
-    "tipo": "collar",
-    "cat": "piedras",
-    "precio": 100,
-    "stock": 1,
-    "src": "assets/hdmi-859888.png",
-    "recortar": false
   }
 ]
