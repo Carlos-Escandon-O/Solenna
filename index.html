@@ -817,7 +817,7 @@ function pathCuello(c, lm){
 function pathHombros(c, h){
   const cx=(h.a.x+h.b.x)/2, cy=(h.a.y+h.b.y)/2;
   const ang=Math.atan2(h.b.y-h.a.y, h.b.x-h.a.x);
-  c.ellipse(cx, cy - h.sep*0.32, h.sep*0.18, h.sep*0.15, ang, 0, Math.PI*2);
+  c.ellipse(cx, cy - h.sep*0.22, h.sep*0.20, h.sep*0.17, ang, 0, Math.PI*2);
 }
 /* Oculta solo la mitad "de atrás" (la de arriba), dejando un arco continuo */
 /* El tracker decide qué mitad queda atrás usando la profundidad (z) */
